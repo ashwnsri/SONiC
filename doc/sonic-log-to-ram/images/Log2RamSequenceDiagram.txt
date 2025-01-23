@@ -1,0 +1,110 @@
+title Log2Ram Sequence Diagram
+typeface mono
+
+SONiC [icon: azure-sonic-dash, color: lightblue]
+log2ramd [icon: app, color: blue]
+log2ramcfgd [icon: gear, color: navy]
+CONFIG_DB [icon:database, color: pink]
+CFGD_HEALTH [icon: database, color: indigo]
+HEARTBEAT [icon: database, color: indigo]
+
+
+SONiC > log2ramd: Start log2ramd
+
+log2ramd > log2ramd: Init Verification
+
+alt [label: Init Verification - Continue Initialization, color: green] {
+  log2ramd > log2ramcfgd: Start
+  activate log2ramd
+  activate log2ramcfgd
+  
+  log2ramcfgd > log2ramcfgd: Init Wait
+  log2ramcfgd > CONFIG_DB: Populate LOG2RAM table
+  
+  log2ramcfgd --> log2ramd
+  deactivate log2ramcfgd
+  deactivate log2ramd
+
+  log2ramd -> CONFIG_DB: Get Log2Ram Running Config
+  activate log2ramd
+
+  log2ramd > CFGD_HEALTH: Populate fields
+  log2ramd > HEARTBEAT: Populate initial values
+  deactivate log2ramd
+}
+
+loop [label: daemon, color: magenta] {
+  alt [label: Heartbeat Sequence, color: red] {
+
+    log2ramd > log2ramd: Check elapsed time since last heartbeat
+    
+    log2ramd > HEARTBEAT: Update input_string with current epoch timestamp
+
+    log2ramd > log2ramd: Compute hash and store in memory based on above epoch timestamp
+
+    log2ramd > HEARTBEAT: Clear output_hash field
+
+    log2ramd > log2ramcfgd: Signal for output_hash update
+    activate log2ramd
+
+    log2ramcfgd > HEARTBEAT: Read input_string
+
+    log2ramcfgd > log2ramcfgd: Compute hash
+
+    log2ramcfgd > HEARTBEAT: Update output_hash
+    
+    log2ramd < HEARTBEAT: Retrieve and compare output_hash
+
+    alt [label: No or invalid response, color: orange] {
+      log2ramd > CFGD_HEALTH: Set state to 'Init'
+      
+      log2ramd > log2ramcfgd: Relaunch
+      activate log2ramcfgd
+      log2ramcfgd --> log2ramd
+      deactivate log2ramcfgd
+      deactivate log2ramd 
+    }
+  }
+
+  alt [label: Snapshot Sequence, color: brown] {
+
+    log2ramd > log2ramd: Check elapsed time since last snapshot
+
+    log2ramd > SONiC: Backup syslogs to disk
+    activate log2ramd
+    activate SONiC
+    SONiC --> log2ramd
+    deactivate SONiC
+
+    log2ramd > CFGD_HEALTH: Update 'last_backup_time'
+    deactivate log2ramd
+    
+  }
+}
+
+par [label: Signal Handling, color: teal] {
+  SONiC > log2ramd: Send SIGTERM
+  log2ramd > log2ramcfgd: Send SIGTERM
+  activate log2ramd
+  activate log2ramcfgd
+  
+  log2ramcfgd > log2ramcfgd: Graceful Termination Procedure
+  log2ramcfgd --> log2ramd
+  deactivate log2ramcfgd
+
+  log2ramd > CFGD_HEALTH: update 'state' to 'Stopped'
+  deactivate log2ramd
+
+  alt [label: Snapshot Sequence, color: brown] {
+
+      log2ramd > SONiC: Backup syslogs to disk
+      activate log2ramd
+      activate SONiC
+      SONiC --> log2ramd
+      deactivate SONiC
+
+      log2ramd > CFGD_HEALTH: Update 'last_backup_time'
+    }
+  log2ramd --> SONiC
+  deactivate log2ramd
+}

@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import subprocess
+
+class LogsBackup:
+    supported_prefixes = set(["syslog", "auth", "cron", "teamd", "telemetry", "bgpd", "zebra", "sairedis", "swss"])
+    supported_postfixes = set(["", ".log", ".gz", ".rec"])
+
+    def __init__(self, logs_dir):
+        """
+        Initialize the LogsBackup object with a log directory.
+        """
+        self.logs_dir = logs_dir
+        self.files_dict = {}
+
+    def get_directory_size(self, directory):
+        """
+        Calculate the total size of the directory.
+        """
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(directory):
+            for f in filenames:
+                fp = os.path.realpath(os.path.join(dirpath, f))
+                if os.path.exists(fp):
+                    total_size += os.path.getsize(fp)
+        return total_size
+
+    def get_unique_prefixes(self, directory):
+        """
+        Get unique prefixes from files in the directory.
+        """
+        files = os.listdir(directory)
+        prefixes = set()
+        for file in files:
+            prefix = file.split('.')[0]
+            prefixes.add(prefix)
+        return prefixes
+
+    def rotate_logs(self, conf_file='/etc/logrotate.conf'):
+        cmd = ['logrotate', '-f', conf_file]
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    def list_files(self, log_dir, prefix, postfix):
+        """
+        List files in a directory that match the given prefix and postfix.
+        """
+        if len(postfix) > 0:
+            matching_files = [
+                f for f in os.listdir(log_dir)
+                if (f.endswith(postfix) and f.startswith(prefix) and os.path.isfile(os.path.join(log_dir, f)))
+            ]
+        else:
+            matching_files = [
+                f for f in os.listdir(log_dir)
+                if (f.startswith(prefix) and not any(f.endswith(pf) for pf in self.supported_postfixes if len(pf) > 0)
+                    and os.path.isfile(os.path.join(log_dir, f)))
+            ]
+        return matching_files
+
+    def recurse(self, log_dir):
+        """
+        Recursively process directories to build the files dictionary.
+        """
+        unique_prefixes = self.get_unique_prefixes(log_dir)
+
+        for prefix in unique_prefixes:
+            prefix_path = os.path.join(log_dir, prefix)
+
+            if os.path.isdir(prefix_path):
+                # Recurse into subdirectories
+                self.recurse(prefix_path)
+                continue
+
+            if prefix not in self.supported_prefixes:
+                continue
+
+            # Initialize the dictionary for log_dir and prefix
+            if log_dir not in self.files_dict:
+                self.files_dict[log_dir] = {}
+            if prefix not in self.files_dict[log_dir]:
+                self.files_dict[log_dir][prefix] = {}
+
+            for postfix in self.supported_postfixes:
+                matching_files = self.list_files(log_dir, prefix, postfix)
+                if matching_files:
+                    sorted_files = sorted(
+                        matching_files,
+                        key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else float('inf')
+                    )
+                    self.files_dict[log_dir][prefix][postfix] = sorted_files
+
+    def process_logs(self):
+        """
+        Main method to process logs and build the files dictionary.
+        """
+        self.recurse(self.logs_dir)
+
+    def print_files_dict(self):
+        """
+        Print the 3D dictionary of processed files.
+        """
+        print("Files Dictionary:")
+        for log_dir_key, prefixes in self.files_dict.items():
+            for prefix_key, postfixes in prefixes.items():
+                for postfix_key, files in postfixes.items():
+                    print(f"log_dir: {log_dir_key}, prefix: {prefix_key}, postfix: {postfix_key}")
+                    for file in files:
+                        print(f"  {file}")
+
+    def print_total_size(self):
+        """
+        Print the total size of the log directory.
+        """
+        total_size = self.get_directory_size(self.logs_dir)
+        print(f"Total size of '{self.logs_dir}': {total_size} bytes")
+
+    def compare_files_dict(self, other):
+        """
+        Compare the files_dict of the current object with another LogsBackup object
+        and print the difference in count for each key from the perspective of the self class.
+        """
+        if not isinstance(other, LogsBackup):
+            raise ValueError("The object to compare must be an instance of LogsBackup.")
+
+        print("Comparing files_dict (from self's perspective) with the provided LogsBackup object:")
+        for log_dir, prefixes_self in self.files_dict.items():
+            for prefix, postfixes_self in prefixes_self.items():
+                for postfix, files_self in postfixes_self.items():
+
+                    other_log_dir = log_dir.replace(self.logs_dir, other.logs_dir)
+                    files_other = other.files_dict.get(other_log_dir, {}).get(prefix, {}).get(postfix, [])
+
+                    count_diff = len(files_self) - len(files_other)
+                    print(f"log_dir: {log_dir}, prefix: {prefix}, postfix: {postfix} -> Difference in count: {count_diff}")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 3:
+        print("Usage: {} <logs_dir1> <logs_dir2>".format(sys.argv[0]))
+        sys.exit(1)
+
+    logs_dir1 = sys.argv[1]
+    logs_dir2 = sys.argv[2]
+
+    backup1 = LogsBackup(logs_dir1)
+    backup2 = LogsBackup(logs_dir2)
+
+    backup1.process_logs()
+    backup2.process_logs()
+
+    backup1.compare_files_dict(backup2)
